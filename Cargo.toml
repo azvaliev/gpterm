@@ -7,15 +7,17 @@ edition = "2021"
 
 [dependencies]
 dotenv = "0.15"
-dotenv_codegen = "0.15"
 
 reqwest = { version = "0.11", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 
+rpassword = "7.2"
 exitcode = { version = "1.1" }
+
 futures-core = "0.3.28"
 bytes = "1.4.0"
 futures-util = "0.3.28"
 cuid2 = "0.1.0"
+home = "0.5.4"

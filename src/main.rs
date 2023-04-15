@@ -3,18 +3,22 @@ use futures_util::StreamExt;
 use serde_json;
 use std::{
     io::{self, Write},
-    process,
+    process, path::Path, env, fs,
 };
 
 use bytes::Bytes;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
-#[macro_use]
-extern crate dotenv_codegen;
+const SIGNUP_PROMPT: &'static str = "This app requires an OpenAI API key.\nYou can sign up for an OpenAI account for free and get yours using the below link";
+const SIGNUP_LINK: &'static str = "https://platform.openai.com/account/api-keys";
+const ENTER_API_KEY_PROMPT: &'static str = "Please enter your OpenAI API Key:";
 
 const OPENAI_COMPLETION_ENDPOINT: &'static str = "https://api.openai.com/v1/chat/completions";
-const OPENAI_API_KEY: &'static str = dotenv!("OPENAI_API_KEY");
+
+const TOKEN_VARIABLE: &'static str = "OPENAI_API_TOKEN";
+const APP_FOLDER: &'static str = ".gpterm";
+const TOKEN_FILE: &'static str = "token";
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
@@ -33,6 +37,26 @@ struct Message {
 
 #[tokio::main]
 async fn main() {
+    // Retrieve previously saved users API token or ask them to input it
+    let api_key = match get_openai_api_key() {
+        Some(key) => key,
+        None => {
+            print!("{}\n{}\n\n{}", SIGNUP_PROMPT, SIGNUP_LINK, ENTER_API_KEY_PROMPT);
+            io::stdout().flush().unwrap();
+            
+            let key = rpassword::read_password().unwrap_or_else(|_| {
+                println!("Could not read api key. Please try again later");
+                process::exit(exitcode::USAGE);
+            });
+
+            if let Err(e) = save_openai_api_key(&key) {
+                eprintln!("Failed to save api key to disk {}", e);
+            };
+
+            key
+        }
+    };
+    
     let mut conversation: Vec<Message> = Vec::new();
 
     println!("Type your message - when finished, type ;; and press enter");
@@ -70,7 +94,7 @@ async fn main() {
         });
 
         // Get ChatGPT response as SSE stream
-        let mut res_stream = get_completion(&conversation).await.unwrap();
+        let mut res_stream = get_completion(&conversation, &api_key).await.unwrap();
         while let Some(Ok(raw_res)) = res_stream.next().await {
             // Multiple events can get recieved at once so we split those up
             let responses = str::from_utf8(&raw_res)
@@ -115,6 +139,50 @@ async fn main() {
     }
 }
 
+fn get_openai_api_key<'a>() -> Option<String> {
+    if let Ok(token) = env::var(TOKEN_VARIABLE) {
+        return Some(token);
+    };
+
+    let local_app_folder = match home::home_dir() {
+        Some(path) => Path::join(&path, APP_FOLDER),
+        None => {
+            eprintln!("Could not determine your home directory!");
+            process::exit(exitcode::OSFILE);
+        }
+    };
+    
+    let path_to_token_file = Path::join(&local_app_folder, TOKEN_FILE);
+    if !path_to_token_file.exists() {
+        return None;
+    };
+
+    if let Ok(token) = fs::read_to_string(path_to_token_file) {
+        return Some(token);
+    };
+
+    return None;
+}
+
+fn save_openai_api_key(api_key: &str) -> Result<(), io::Error> {
+    let local_app_folder = match home::home_dir() {
+        Some(path) => Path::join(&path, APP_FOLDER),
+        None => {
+            eprintln!("Could not determine your home directory");
+            process::exit(exitcode::OSFILE);
+        }
+    };
+    
+    if !local_app_folder.exists() {
+        fs::create_dir(&local_app_folder)?;
+    };
+
+    let path_to_token_file = Path::join(&local_app_folder, TOKEN_FILE);
+    fs::write(path_to_token_file, api_key)?;
+
+    return Ok(());
+}
+
 #[derive(Debug)]
 enum CompletionError {
     RequestSerializeError,
@@ -147,6 +215,7 @@ struct CompletionResponse {
 
 async fn get_completion(
     conversation: &Vec<Message>,
+    api_key: &str,
 ) -> Result<impl futures_core::Stream<Item = Result<Bytes, reqwest::Error>>, CompletionError> {
     // Request body for OpenAI completion
     #[derive(Serialize)]
@@ -167,7 +236,7 @@ async fn get_completion(
     let client = reqwest::Client::new();
     let res = client
         .post(OPENAI_COMPLETION_ENDPOINT)
-        .header("Authorization", format!("Bearer {}", OPENAI_API_KEY))
+        .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .body(request_body)
         .send()
