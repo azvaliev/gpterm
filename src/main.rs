@@ -1,9 +1,10 @@
 use core::str;
 use futures_util::StreamExt;
 use serde_json;
+use tempdir::TempDir;
 use std::{
     io::{self, Write},
-    process, path::Path, env, fs,
+    process, path::{Path, self}, env, fs,
 };
 
 use bytes::Bytes;
@@ -37,8 +38,16 @@ struct Message {
 
 #[tokio::main]
 async fn main() {
+    let local_app_folder = match home::home_dir() {
+        Some(path) => Path::join(&path, APP_FOLDER),
+        None => {
+            eprintln!("Could not determine your home directory!");
+            process::exit(exitcode::OSFILE);
+        }
+    };
+    
     // Retrieve previously saved users API token or ask them to input it
-    let api_key = match get_openai_api_key() {
+    let api_key = match get_openai_api_key(&local_app_folder) {
         Some(key) => key,
         None => {
             print!("{}\n{}\n\n{}", SIGNUP_PROMPT, SIGNUP_LINK, ENTER_API_KEY_PROMPT);
@@ -139,17 +148,55 @@ async fn main() {
     }
 }
 
-fn get_openai_api_key<'a>() -> Option<String> {
+#[test]
+fn get_some_openai_api_key_from_env_var() {
+    let api_key_env_var = String::from("TE$1_T3ST");
+
+    env::set_var(TOKEN_VARIABLE, &api_key_env_var);
+    assert_eq!(get_openai_api_key(&path::PathBuf::new()), Some(api_key_env_var));
+    env::remove_var(TOKEN_VARIABLE);
+}
+
+#[test]
+fn get_some_openai_api_key_prefer_env_var() {
+    let api_key_env_var = String::from("ENV_V@R_T3$T");
+
+    let fs_token = String::from("F0o_B@r");
+    let tmp_dir = TempDir::new("key_from_fs").expect("can create temp folder for test");
+    let tmp_token_file = Path::join(&tmp_dir.path(), TOKEN_FILE);
+    fs::write(&tmp_token_file, &fs_token).expect("can write temp token file");
+
+    env::set_var(TOKEN_VARIABLE, &api_key_env_var);
+    assert_eq!(get_openai_api_key(&tmp_dir.into_path()), Some(api_key_env_var));
+    env::remove_var(TOKEN_VARIABLE);
+}
+
+#[test]
+fn get_some_openai_api_key_from_fs() {
+    let example_token = String::from("F0o_B@r");
+
+    let tmp_dir = TempDir::new("key_from_fs").expect("can create temp folder for test");
+    let tmp_token_file = Path::join(&tmp_dir.path(), TOKEN_FILE);
+    fs::write(&tmp_token_file, &example_token).expect("can write temp token file");
+
+    assert_eq!(get_openai_api_key(&tmp_dir.into_path()), Some(example_token));
+}
+
+#[test]
+fn get_none_openai_api_key_no_folder() {
+    assert_eq!(get_openai_api_key(&path::PathBuf::from("this_doesnt_exist")), None);
+}
+
+#[test]
+fn get_none_openai_api_key_no_file() {
+    let tmp_dir = TempDir::new("this_doesnt_have_any_files").expect("can create temporary folder");
+
+    assert_eq!(get_openai_api_key(&tmp_dir.into_path()), None);
+}
+
+fn get_openai_api_key<'a>(local_app_folder: &path::PathBuf) -> Option<String> {
     if let Ok(token) = env::var(TOKEN_VARIABLE) {
         return Some(token);
-    };
-
-    let local_app_folder = match home::home_dir() {
-        Some(path) => Path::join(&path, APP_FOLDER),
-        None => {
-            eprintln!("Could not determine your home directory!");
-            process::exit(exitcode::OSFILE);
-        }
     };
     
     let path_to_token_file = Path::join(&local_app_folder, TOKEN_FILE);
