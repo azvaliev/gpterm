@@ -1,10 +1,10 @@
 use core::str;
+use futures_util::StreamExt;
+use serde_json;
 use std::{
     io::{self, Write},
     process,
 };
-use futures_util::StreamExt;
-use serde_json;
 
 use bytes::Bytes;
 use reqwest::StatusCode;
@@ -64,7 +64,6 @@ async fn main() {
             }
         }
 
-
         // Get ChatGPT response as SSE stream
         let mut res_stream = get_completion(&conversation).await.unwrap();
         while let Some(Ok(raw_res)) = res_stream.next().await {
@@ -75,22 +74,25 @@ async fn main() {
                 .filter(|r| r.len() > 6 && !r.contains("[DONE]"));
 
             for response in responses {
-                let (chat_id, response) = match serde_json::from_str::<CompletionResponse>(&response[6..]) {
-                    Ok(mut d) => (d.id, d.choices.remove(0).delta),
-                    Err(e) => {
-                        eprintln!("Failed to read response {:?} - {}", response, e);
-                        break;
-                    }
-                };
+                let (chat_id, response) =
+                    match serde_json::from_str::<CompletionResponse>(&response[6..]) {
+                        Ok(mut d) => (d.id, d.choices.remove(0).delta),
+                        Err(e) => {
+                            eprintln!("Failed to read response {:?} - {}", response, e);
+                            break;
+                        }
+                    };
 
                 // The first SSE will created a new message, but further ones should add to existing message
                 let mut message = match conversation.last() {
-                    Some(Message{ id, .. }) if id == &chat_id => conversation.pop().expect("last message should exist"),
-                    _ => Message{
+                    Some(Message { id, .. }) if id == &chat_id => {
+                        conversation.pop().expect("last message should exist")
+                    }
+                    _ => Message {
                         id: chat_id,
                         role: response.role.unwrap_or(MessageRole::Assistant),
                         content: String::new(),
-                    }
+                    },
                 };
                 let content = response.content.unwrap_or(String::new());
 
@@ -101,11 +103,11 @@ async fn main() {
                 message.content += &content;
                 conversation.push(message);
             }
-        };
+        }
 
         // Spacing between messages to make conversation easier to read
         print!("\n\n");
-    };
+    }
 }
 
 #[derive(Debug)]
