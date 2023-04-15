@@ -47,6 +47,7 @@ async fn main() {
             .read_line(&mut message)
             .expect("Read input from terminal");
 
+        // Match command or create new message
         match message.as_str() {
             "exit\n" => process::exit(exitcode::OK),
             "reset\n" => {
@@ -64,9 +65,10 @@ async fn main() {
         }
 
 
-        // Get ChatGPT response
+        // Get ChatGPT response as SSE stream
         let mut res_stream = get_completion(&conversation).await.unwrap();
         while let Some(Ok(raw_res)) = res_stream.next().await {
+            // Multiple events can get recieved at once so we split those up
             let responses = str::from_utf8(&raw_res)
                 .expect("recieved a string response")
                 .split("\n\n")
@@ -81,6 +83,7 @@ async fn main() {
                     }
                 };
 
+                // The first SSE will created a new message, but further ones should add to existing message
                 let mut message = match conversation.last() {
                     Some(Message{ id, .. }) if id == &chat_id => conversation.pop().expect("last message should exist"),
                     _ => Message{
@@ -91,13 +94,16 @@ async fn main() {
                 };
                 let content = response.content.unwrap_or(String::new());
 
+                // Since we are using print!() and not println!() we should flush
                 print!("{}", &content);
-                message.content += &content;
-
                 let _ = io::stdout().flush();
+
+                message.content += &content;
                 conversation.push(message);
             }
         };
+
+        // Spacing between messages to make conversation easier to read
         print!("\n\n");
     };
 }
@@ -150,6 +156,7 @@ async fn get_completion(
     })
     .map_err(|_| CompletionError::RequestSerializeError)?;
 
+    // Open the streaming connection and handle any bad responses
     let client = reqwest::Client::new();
     let res = client
         .post(OPENAI_COMPLETION_ENDPOINT)
