@@ -35,34 +35,39 @@ struct Message {
 async fn main() {
     let mut conversation: Vec<Message> = Vec::new();
 
-    println!("Enter a message...");
+    println!("Type your message - when finished, type ;; and press enter");
     loop {
-        // Add a prompt for user to enter message
         let mut message = String::new();
-        print!("> ");
-        let _ = io::stdout().flush();
 
-        // Read users message
-        io::stdin()
-            .read_line(&mut message)
-            .expect("Read input from terminal");
+        while !message.ends_with(";;\n") {
+            // Add a prompt for user to enter message
+            print!("> ");
+            let _ = io::stdout().flush();
 
-        // Match command or create new message
-        match message.as_str() {
-            "exit\n" => process::exit(exitcode::OK),
-            "reset\n" => {
-                conversation.clear();
-                println!("Cleared previous conversation");
-                continue;
-            }
-            _ => {
-                conversation.push(Message {
-                    id: cuid2::create_id(),
-                    role: MessageRole::User,
-                    content: message,
-                });
+            // Read users message
+            io::stdin()
+                .read_line(&mut message)
+                .expect("Read input from terminal");
+
+            // Check for commands
+            match message.as_str() {
+                "exit\n" => process::exit(exitcode::OK),
+                "reset" => {
+                    conversation.clear();
+                    println!("Cleared previous conversation");
+                    message = String::new();
+                    continue;
+                }
+                _ => {}
             }
         }
+
+        // Add message to conversation
+        conversation.push(Message {
+            id: cuid2::create_id(),
+            role: MessageRole::User,
+            content: String::from(message.trim_end_matches(";;\n")),
+        });
 
         // Get ChatGPT response as SSE stream
         let mut res_stream = get_completion(&conversation).await.unwrap();
