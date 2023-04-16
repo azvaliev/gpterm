@@ -1,11 +1,13 @@
 use core::str;
 use futures_util::StreamExt;
 use serde_json;
-use tempdir::TempDir;
 use std::{
+    env, fs,
     io::{self, Write},
-    process, path::{Path, self}, env, fs,
+    path::{self, Path},
+    process,
 };
+use tempdir::TempDir;
 
 use bytes::Bytes;
 use reqwest::StatusCode;
@@ -45,27 +47,30 @@ async fn main() {
             process::exit(exitcode::OSFILE);
         }
     };
-    
+
     // Retrieve previously saved users API token or ask them to input it
     let api_key = match get_openai_api_key(&local_app_folder) {
         Some(key) => key,
         None => {
-            print!("{}\n{}\n\n{}", SIGNUP_PROMPT, SIGNUP_LINK, ENTER_API_KEY_PROMPT);
+            print!(
+                "{}\n{}\n\n{}",
+                SIGNUP_PROMPT, SIGNUP_LINK, ENTER_API_KEY_PROMPT
+            );
             io::stdout().flush().unwrap();
-            
+
             let key = rpassword::read_password().unwrap_or_else(|_| {
                 println!("Could not read api key. Please try again later");
                 process::exit(exitcode::USAGE);
             });
 
-            if let Err(e) = save_openai_api_key(&key) {
+            if let Err(e) = save_openai_api_key(&local_app_folder, &key) {
                 eprintln!("Failed to save api key to disk {}", e);
             };
 
             key
         }
     };
-    
+
     let mut conversation: Vec<Message> = Vec::new();
 
     println!("Type your message - when finished, type ;; and press enter");
@@ -150,46 +155,58 @@ async fn main() {
 
 #[test]
 fn get_some_openai_api_key_from_env_var() {
-    let api_key_env_var = String::from("TE$1_T3ST");
+    let api_key_env_var = cuid2::create_id();
 
     env::set_var(TOKEN_VARIABLE, &api_key_env_var);
-    assert_eq!(get_openai_api_key(&path::PathBuf::new()), Some(api_key_env_var));
+    assert_eq!(
+        get_openai_api_key(&path::PathBuf::new()),
+        Some(api_key_env_var)
+    );
     env::remove_var(TOKEN_VARIABLE);
 }
 
 #[test]
 fn get_some_openai_api_key_prefer_env_var() {
-    let api_key_env_var = String::from("ENV_V@R_T3$T");
+    let api_key_env_var = cuid2::create_id();
 
-    let fs_token = String::from("F0o_B@r");
-    let tmp_dir = TempDir::new("key_from_fs").expect("can create temp folder for test");
+    let fs_token = cuid2::create_id();
+    let tmp_dir = TempDir::new(&cuid2::create_id()).expect("can create temp folder for test");
     let tmp_token_file = Path::join(&tmp_dir.path(), TOKEN_FILE);
     fs::write(&tmp_token_file, &fs_token).expect("can write temp token file");
 
     env::set_var(TOKEN_VARIABLE, &api_key_env_var);
-    assert_eq!(get_openai_api_key(&tmp_dir.into_path()), Some(api_key_env_var));
+    assert_eq!(
+        get_openai_api_key(&tmp_dir.into_path()),
+        Some(api_key_env_var)
+    );
     env::remove_var(TOKEN_VARIABLE);
 }
 
 #[test]
 fn get_some_openai_api_key_from_fs() {
-    let example_token = String::from("F0o_B@r");
+    let example_token = cuid2::create_id();
 
-    let tmp_dir = TempDir::new("key_from_fs").expect("can create temp folder for test");
+    let tmp_dir = TempDir::new(&cuid2::create_id()).expect("can create temp folder for test");
     let tmp_token_file = Path::join(&tmp_dir.path(), TOKEN_FILE);
     fs::write(&tmp_token_file, &example_token).expect("can write temp token file");
 
-    assert_eq!(get_openai_api_key(&tmp_dir.into_path()), Some(example_token));
+    assert_eq!(
+        get_openai_api_key(&tmp_dir.into_path()),
+        Some(example_token)
+    );
 }
 
 #[test]
 fn get_none_openai_api_key_no_folder() {
-    assert_eq!(get_openai_api_key(&path::PathBuf::from("this_doesnt_exist")), None);
+    assert_eq!(
+        get_openai_api_key(&path::PathBuf::from("this_doesnt_exist")),
+        None
+    );
 }
 
 #[test]
 fn get_none_openai_api_key_no_file() {
-    let tmp_dir = TempDir::new("this_doesnt_have_any_files").expect("can create temporary folder");
+    let tmp_dir = TempDir::new(&cuid2::create_id()).expect("can create temporary folder");
 
     assert_eq!(get_openai_api_key(&tmp_dir.into_path()), None);
 }
@@ -198,7 +215,7 @@ fn get_openai_api_key<'a>(local_app_folder: &path::PathBuf) -> Option<String> {
     if let Ok(token) = env::var(TOKEN_VARIABLE) {
         return Some(token);
     };
-    
+
     let path_to_token_file = Path::join(&local_app_folder, TOKEN_FILE);
     if !path_to_token_file.exists() {
         return None;
@@ -211,15 +228,43 @@ fn get_openai_api_key<'a>(local_app_folder: &path::PathBuf) -> Option<String> {
     return None;
 }
 
-fn save_openai_api_key(api_key: &str) -> Result<(), io::Error> {
-    let local_app_folder = match home::home_dir() {
-        Some(path) => Path::join(&path, APP_FOLDER),
-        None => {
-            eprintln!("Could not determine your home directory");
-            process::exit(exitcode::OSFILE);
-        }
-    };
-    
+#[test]
+fn save_ok_openai_api_key() {
+    let tmpdir = TempDir::new(&cuid2::create_id()).expect("can create temporary folder");
+    let tmpdir_path = tmpdir.into_path();
+    let api_key = cuid2::create_id();
+
+    println!("{}", tmpdir_path.display());
+
+    assert!(!save_openai_api_key(&tmpdir_path, &api_key).is_err());
+
+    let written_api_key =
+        fs::read_to_string(Path::join(&tmpdir_path, TOKEN_FILE)).expect("can read token file");
+    assert_eq!(written_api_key, api_key);
+}
+
+#[test]
+fn save_ok_openai_api_key_create_folder() {
+    let api_key = cuid2::create_id();
+    let tmpdir_path = path::PathBuf::from(&cuid2::create_id());
+
+    assert!(!save_openai_api_key(&tmpdir_path, &api_key).is_err());
+
+    let written_api_key =
+        fs::read_to_string(Path::join(&tmpdir_path, TOKEN_FILE)).expect("can read token file");
+    assert_eq!(written_api_key, api_key);
+
+    fs::remove_dir_all(tmpdir_path).expect("can cleanup temp dir");
+}
+
+#[test]
+fn save_err_openai_api_key_invalid_folder() {
+    let api_key = cuid2::create_id();
+
+    assert!(save_openai_api_key(&path::PathBuf::new(), &api_key).is_err());
+}
+
+fn save_openai_api_key(local_app_folder: &path::PathBuf, api_key: &str) -> Result<(), io::Error> {
     if !local_app_folder.exists() {
         fs::create_dir(&local_app_folder)?;
     };
