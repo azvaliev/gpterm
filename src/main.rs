@@ -1,6 +1,5 @@
 use core::str;
 use futures_util::StreamExt;
-use serde_json;
 use std::{
     env, fs,
     io::{self, Write},
@@ -36,6 +35,11 @@ struct Message {
     id: String,
     role: MessageRole,
     content: String,
+}
+
+/// only print in dev/debug mode
+macro_rules! debug_println {
+    ($($arg:tt)*) => (if ::std::cfg!(debug_assertions) { ::std::println!($($arg)*); })
 }
 
 #[tokio::main]
@@ -109,6 +113,9 @@ async fn main() {
 
         // Get ChatGPT response as SSE stream
         let mut res_stream = get_completion(&conversation, &api_key).await.unwrap();
+        // Sometimes it will split up an individual line of JSON as two SSE events
+        let mut partial_message = String::new();
+
         while let Some(Ok(raw_res)) = res_stream.next().await {
             // Multiple events can get recieved at once so we split those up
             let responses = str::from_utf8(&raw_res)
@@ -116,12 +123,22 @@ async fn main() {
                 .split("\n\n")
                 .filter(|r| r.len() > 6 && !r.contains("[DONE]"));
 
-            for response in responses {
+            for (idx, response) in responses.enumerate() {
+                let mut response_data = response.replace("data: ", ""); // Remove the SSE prefix
+                    
+                if !partial_message.is_empty() && idx == 0 {
+                    response_data = format!("{}{}", &partial_message, response_data);
+                }
+
                 let (chat_id, response) =
-                    match serde_json::from_str::<CompletionResponse>(&response[6..]) {
-                        Ok(mut d) => (d.id, d.choices.remove(0).delta),
+                    match serde_json::from_str::<CompletionResponse>(&response_data) {
+                        Ok(mut d) => {
+                            partial_message = String::new();
+                            (d.id, d.choices.remove(0).delta)
+                        },
                         Err(e) => {
-                            eprintln!("Failed to read response {:?} - {}", response, e);
+                            partial_message += &response_data;
+                            debug_println!("[WARN] Recieved incomplete response {:?}\n", e);
                             break;
                         }
                     };
@@ -277,10 +294,10 @@ fn save_openai_api_key(local_app_folder: &path::PathBuf, api_key: &str) -> Resul
 
 #[derive(Debug)]
 enum CompletionError {
-    RequestSerializeError,
-    UnauthorizedError,
-    OutOfTokensError,
-    UnknownRequestError,
+    RequestSerialize,
+    Unauthorized,
+    OutOfTokens,
+    UnknownRequest,
 }
 
 // This is essentially one piece of the response from ChatGPT
@@ -322,7 +339,7 @@ async fn get_completion(
         messages: conversation,
         stream: true,
     })
-    .map_err(|_| CompletionError::RequestSerializeError)?;
+    .map_err(|_| CompletionError::RequestSerialize)?;
 
     // Open the streaming connection and handle any bad responses
     let client = reqwest::Client::new();
@@ -334,13 +351,13 @@ async fn get_completion(
         .send()
         .await
         .map_err(|e| {
-            return match e.status() {
-                Some(StatusCode::UNAUTHORIZED) => CompletionError::UnauthorizedError,
-                Some(StatusCode::TOO_MANY_REQUESTS) => CompletionError::OutOfTokensError,
-                _ => CompletionError::UnknownRequestError,
-            };
+            match e.status() {
+                Some(StatusCode::UNAUTHORIZED) => CompletionError::Unauthorized,
+                Some(StatusCode::TOO_MANY_REQUESTS) => CompletionError::OutOfTokens,
+                _ => CompletionError::UnknownRequest,
+            }
         })?
         .bytes_stream();
 
-    return Ok(res);
+    Ok(res)
 }
